@@ -1,0 +1,281 @@
+#!/bin/bash
+
+if [ $# -lt 1 ];then
+echo "Error! Should enter the root directory of xcode project after the ipa-build command."
+exit 2
+fi
+
+if [ ! -d $1 ];then
+echo "Error! The first param must be a directory."
+exit 2
+fi
+
+#工程绝对路径
+cd $1
+project_path=$(pwd)
+
+#编译的configuration，默认为Release
+build_config=Release
+
+param_pattern=":p:nc:o:t:ws:"
+OPTIND=2
+while getopts $param_pattern optname
+do
+case "$optname" in
+"n")
+should_clean=y
+;;
+"p")
+tmp_optind=$OPTIND
+tmp_optname=$optname
+tmp_optarg=$OPTARG
+
+OPTIND=$OPTIND-1
+if getopts $param_pattern optname ;then
+echo  "Error argument value for option $tmp_optname"
+exit 2
+fi
+OPTIND=$tmp_optind
+
+platform_id=$tmp_optarg
+
+;;
+"c")
+tmp_optind=$OPTIND
+tmp_optname=$optname
+tmp_optarg=$OPTARG
+OPTIND=$OPTIND-1
+if getopts $param_pattern optname ;then
+echo  "Error argument value for option $tmp_optname"
+exit 2
+fi
+OPTIND=$tmp_optind
+
+build_config=$tmp_optarg
+
+;;
+"o")
+tmp_optind=$OPTIND
+tmp_optname=$optname
+tmp_optarg=$OPTARG
+
+OPTIND=$OPTIND-1
+if getopts $param_pattern optname ;then
+echo  "Error argument value for option $tmp_optname"
+exit 2
+fi
+OPTIND=$tmp_optind
+
+
+cd $tmp_optarg
+output_path=$(pwd)
+cd ${project_path}
+
+if [ ! -d $output_path ];then
+echo "Error!The value of option o must be an exist directory."
+exit 2
+fi
+
+;;
+"w")
+workspace_name='*.xcworkspace'
+ls $project_path/$workspace_name &>/dev/null
+rtnValue=$?
+if [ $rtnValue = 0 ];then
+build_workspace=$(echo $(basename $project_path/$workspace_name))
+else
+echo  "Error!Current path is not a xcode workspace.Please check, or do not use -w option."
+exit 2
+fi
+
+;;
+"s")
+tmp_optind=$OPTIND
+tmp_optname=$optname
+tmp_optarg=$OPTARG
+
+OPTIND=$OPTIND-1
+if getopts $param_pattern optname ;then
+echo  "Error argument value for option $tmp_optname"
+exit 2
+fi
+OPTIND=$tmp_optind
+
+build_scheme=$tmp_optarg
+
+;;
+"t")
+tmp_optind=$OPTIND
+tmp_optname=$optname
+tmp_optarg=$OPTARG
+
+OPTIND=$OPTIND-1
+if getopts $param_pattern optname ;then
+echo  "Error argument value for option $tmp_optname"
+exit 2
+fi
+OPTIND=$tmp_optind
+
+build_target=$tmp_optarg
+
+;;
+
+
+"?")
+echo "Error! Unknown option $OPTARG"
+exit 2
+;;
+":")
+echo "Error! No argument value for option $OPTARG"
+exit 2
+;;
+*)
+# Should not occur
+echo "Error! Unknown error while processing options"
+exit 2
+;;
+esac
+done
+
+
+#build文件夹路径
+build_path=${project_path}/build
+#生成的app文件目录
+appdirname=Release-iphoneos
+if [ $build_config = Debug ];then
+appdirname=Debug-iphoneos
+fi
+if [ $build_config = Distribution ];then
+appdirname=Distribution-iphoneos
+fi
+#编译后文件路径(仅当编译workspace时才会用到)
+compiled_path=${build_path}/${appdirname}
+
+
+cd $build_path
+#创建ipa-build文件夹
+if [ -d ./ipa-build ];then
+rm -rf ipa-build
+fi
+mkdir ipa-build
+
+configPath=${project_path}/SystemConfig.h
+function systemConfig_path(){
+for file in `ls $1`
+do
+if [ -d $1"/"$file ];then #目录文件
+#替换文件操作
+systemConfig_path $1"/"$file # 重新遍历子目录
+
+else #非目录文件
+dir=$1"/"$file
+extension="${file##*.}"
+fileExtension="${file##*/}"
+if [ $fileExtension = SystemConfig.txt ];then
+#替换配置文件
+#获取text里面的信息
+while read textLine
+do
+#将每一行的信息进行复制替换到SystemConfig.h 文件里面
+header=$(echo "$textLine" |cut -f1 -d'&')
+content=$(echo "$textLine" |cut -f2 -d'&')
+while read line
+do
+#删除空格之后参数，注:%后面是空格
+line1="${line% *}"
+if [ "$line1" = "$header" ];then
+newLine=${line1}${content}
+sed -i "" "s/$line/$newLine/g" `grep $line -rl $configPath`
+fi
+done < $configPath #SystemConfig.h
+
+done< $dir #SystemConfig.txt
+
+elif [ $fileExtension = chl.txt ];then
+#读取chl.txt里面的内容
+chlpath=$dir
+line=$(cat $chlpath)
+chlId=$(echo "$line" |cut -f2 -d';')
+chlName=$(echo "$line" |cut -f1 -d';')
+BUNDLE_ID=$(echo "$line" |cut -f5 -d';')
+CERTIFICATE=$(echo "$line" |cut -f6 -d';')
+MOBILEPROVISION=$(echo "$line" |cut -f7 -d';')
+MOBILEPROVISION=$1"/"$MOBILEPROVISION #获取文件路径
+channelplist_path=${project_path}/chlId.plist
+#替换渠道号
+$(/usr/libexec/PlistBuddy -c "Set :chl  $chlId" ${channelplist_path})
+
+info_path=${project_path}/Info.plist
+$(/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${BUNDLE_ID}" ${info_path})
+#是否clean
+cd $project_path
+if [ "$should_clean" = "y" ];then
+xcodebuild clean
+fi
+
+#组合编译命令
+build_cmd='xcodebuild'
+
+if [ "$build_workspace" != "" ];then
+#编译workspace
+if [ "$build_scheme" = "" ];then
+echo "Error! Must provide a scheme by -s option together when using -w option to compile a workspace."
+exit 2
+fi
+
+build_cmd=${build_cmd}' -workspace '${build_workspace}' -scheme '${build_scheme}' -configuration '${build_config}' CONFIGURATION_BUILD_DIR='${compiled_path}' ONLY_ACTIVE_ARCH=NO'
+
+else
+#编译project
+build_cmd=${build_cmd}' -configuration '${build_config}
+
+if [ "$build_target" != "" ];then
+build_cmd=${build_cmd}' -target '${build_target}
+fi
+
+fi
+
+
+#编译工程
+cd $project_path
+#获取证书UUID
+mobileprovision_uuid=`/usr/libexec/PlistBuddy -c "Print UUID" /dev/stdin <<< $(/usr/bin/security cms -D -i ${MOBILEPROVISION})`
+$build_cmd build CODE_SIGN_IDENTITY="${CERTIFICATE}" PROVISIONING_PROFILE="${mobileprovision_uuid}" PRODUCT_BUNDLE_IDENTIFIER="${BUNDLE_ID}" || exit
+
+#进入build路径
+cd $build_path
+
+#app文件名称
+appname=$(basename ./${appdirname}/${build_scheme}.app)
+#通过app文件名获得工程target名字
+#app文件中Info.plist文件路径
+app_infoplist_path=${build_path}/${appdirname}/${appname}/Info.plist
+target_name=$(echo $appname | awk -F. '{print $1}')
+
+#取版本号
+
+bundleShortVersion=$(/usr/libexec/PlistBuddy -c "print CFBundleShortVersionString" ${app_infoplist_path})
+#取build值
+bundleVersion=$(/usr/libexec/PlistBuddy -c "print CFBundleVersion" ${app_infoplist_path})
+#取displayName
+displayName=$(/usr/libexec/PlistBuddy -c "print CFBundleDisplayName" ${app_infoplist_path})
+#IPA名称
+ipa_name="${displayName}_${build_config}_${bundleVersion}_${chlName}_$(date +"%Y%m%d")"
+echo $ipa_name
+
+#xcrun打包
+xcrun -sdk iphoneos PackageApplication -v ./${appdirname}/${build_scheme}.app -o ${build_path}/ipa-build/${ipa_name}.ipa || exit
+
+if [ "$output_path" != "" ];then
+cp ${build_path}/ipa-build/${ipa_name}.ipa $output_path/${ipa_name}.ipa
+echo "Copy ipa file successfully to the path $output_path/${ipa_name}.ipa"
+fi
+
+#打包结束换回之前的状态
+
+fi
+fi
+done
+}
+
+systemConfig_path $project_path/../../doc/Config
